@@ -1,0 +1,9 @@
+.env
+.token.json
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+certs/key.pem
+certs/cert.pem
