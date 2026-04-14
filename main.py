@@ -56,9 +56,9 @@ def main():
         from src.cafe24.callback_server import run as run_server
         url = get_authorization_url(SCOPES)
         print(f"\n인증 URL:\n{url}\n")
-        print("브라우저를 자동으로 엽니다. 팝업이 안 뜨면 위 URL을 직접 복사해 붙여넣으세요.")
-        webbrowser.open(url)
-        run_server()
+        print("브라우저에서 http://localhost:8080 이 열립니다.")
+        print("카페24 인증 후 리다이렉트된 URL을 폼에 붙여넣으면 토큰이 자동 저장됩니다.\n")
+        run_server(auth_url=url)
 
     # ── auth: URL만 출력 ───────────────────────────────────────────────────────
     elif cmd == "auth":

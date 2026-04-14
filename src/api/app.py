@@ -5,12 +5,15 @@ ryublanche-ax 어드민 웹 서버
 """
 
 import os
+import re
+import subprocess
+import threading
 import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -22,17 +25,49 @@ from src.cafe24.token_manager import TokenManager
 
 app = FastAPI(title="ryublanche-ax")
 
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")  # 터널 시작 후 자동 설정
 
 token_manager = TokenManager()
 
 
 def get_client() -> Cafe24Client:
     return Cafe24Client(token_manager.get_token())
+
+
+# ── Cloudflare Tunnel ─────────────────────────────────────────────────────────
+
+def _start_tunnel(port: int):
+    """cloudflared quick tunnel 시작 → PUBLIC_BASE_URL 자동 설정"""
+    global PUBLIC_BASE_URL
+    try:
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        for line in proc.stdout:
+            match = re.search(r"https://[a-z0-9\-]+\.trycloudflare\.com", line)
+            if match:
+                PUBLIC_BASE_URL = match.group(0)
+                print(f"\n[Tunnel] 공개 URL: {PUBLIC_BASE_URL}\n")
+                break
+    except FileNotFoundError:
+        print("[Tunnel] cloudflared 미설치 — 이미지 자동 업로드 비활성화")
+
+
+@app.on_event("startup")
+async def startup():
+    threading.Thread(target=_start_tunnel, args=(8000,), daemon=True).start()
 
 
 # ── 라우트 ────────────────────────────────────────────────────────────────────
@@ -56,8 +91,21 @@ async def analyze(file: UploadFile = File(...)):
 
     product_info = analyze_image(save_path)
     product_info["_image_filename"] = filename
-    product_info["_image_url"] = f"{PUBLIC_BASE_URL}/uploads/{filename}"
+
+    # 터널 URL이 준비됐으면 이미지 공개 URL 포함
+    if PUBLIC_BASE_URL:
+        product_info["_image_url"] = f"{PUBLIC_BASE_URL}/uploads/{filename}"
     return product_info
+
+
+@app.get("/api/categories")
+async def list_categories():
+    """카페24 카테고리 목록 (쇼핑몰 노출 카테고리만)"""
+    client = get_client()
+    result = client.get("/categories", params={"display_group": 1, "limit": 100})
+    # use_display=T 인 카테고리만 반환
+    visible = [c for c in result.get("categories", []) if c.get("use_display") == "T"]
+    return {"categories": visible}
 
 
 class CreateProductRequest(BaseModel):
@@ -70,11 +118,37 @@ class CreateProductRequest(BaseModel):
     product_tag: str = ""
     image_filename: str = ""
     sizes: list[str] = []
+    category_no: int = 0
+
+
+def _upload_product_image(client: Cafe24Client, product_no: int, filename: str) -> bool:
+    """상품 이미지를 base64로 직접 Cafe24에 업로드"""
+    import base64
+    img_path = UPLOAD_DIR / filename
+    if not img_path.exists():
+        return False
+    ext_map = {".jpg": "jpg", ".jpeg": "jpg", ".png": "png", ".gif": "gif", ".webp": "webp"}
+    ext = ext_map.get(img_path.suffix.lower(), "jpg")
+    b64 = base64.standard_b64encode(img_path.read_bytes()).decode()
+    image_data = f"data:image/{ext};base64,{b64}"
+    try:
+        for image_type in ("detail", "list", "tiny", "small"):
+            client.post(f"/products/{product_no}/images", {
+                "request": {
+                    "image_upload_type": "B",
+                    "image_type": image_type,
+                    "image": image_data,
+                }
+            })
+        return True
+    except Exception as e:
+        print(f"[경고] 이미지 업로드 실패: {e}")
+        return False
 
 
 @app.post("/api/products")
 async def create_product(req: CreateProductRequest):
-    """카페24에 상품 등록"""
+    """카페24에 상품 등록 (이미지 + 옵션 포함)"""
     client = get_client()
 
     payload: dict = {
@@ -93,36 +167,41 @@ async def create_product(req: CreateProductRequest):
     if req.product_tag:
         payload["product_tag"] = [t.strip() for t in req.product_tag.split(",") if t.strip()]
 
+    # 사이즈 옵션 — 상품 생성 시 함께 전달
+    if req.sizes:
+        payload["has_option"] = "T"
+        payload["option_type"] = "S"
+        payload["option_list_type"] = "S"
+        payload["options"] = [{"name": "사이즈", "value": req.sizes}]
+
     result = client.create_product(payload)
     product = result.get("product", {})
     product_no = product.get("product_no")
 
-    # 사이즈 옵션 등록
-    if req.sizes and product_no:
-        _add_size_options(client, product_no, req.sizes)
+    # 카테고리 할당 (상품 생성 후 별도 API 호출 — product_no는 배열로 전달)
+    if req.category_no and product_no:
+        try:
+            client.post(f"/categories/{req.category_no}/products", {
+                "request": {"product_no": [product_no]}
+            })
+        except Exception as e:
+            print(f"[경고] 카테고리 할당 실패: {e}")
+
+    # 이미지 업로드 (상품 생성 후 별도 업로드)
+    image_uploaded = False
+    if req.image_filename and product_no:
+        image_uploaded = _upload_product_image(client, product_no, req.image_filename)
 
     mall_id = os.getenv("CAFE24_MALL_ID", "ryublanche")
-    admin_url = f"https://{mall_id}.cafe24.com/disp/admin/shop1/product/ProductModify?product_no={product_no}"
+    shop_url = f"https://{mall_id}.cafe24.com/product/detail.html?product_no={product_no}"
 
     return {
         "product_no": product_no,
         "product_code": product.get("product_code"),
         "message": f"상품 등록 완료 (No.{product_no})",
-        "admin_url": admin_url,
+        "shop_url": shop_url,
+        "image_uploaded": image_uploaded,
     }
-
-
-def _add_size_options(client: Cafe24Client, product_no: int, sizes: list[str]):
-    try:
-        client.post(f"/products/{product_no}/options", {
-            "request": {
-                "has_option": "T",
-                "option_type": "S",
-                "options": [{"name": "사이즈", "value": sizes}],
-            }
-        })
-    except Exception as e:
-        print(f"[경고] 사이즈 옵션 등록 실패: {e}")
 
 
 @app.get("/api/products")

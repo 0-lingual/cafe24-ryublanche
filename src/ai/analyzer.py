@@ -61,5 +61,9 @@ def analyze_image(image_path: Path) -> dict:
     import json, re
     raw = message.content[0].text.strip()
     # 마크다운 코드블록 제거
-    raw = re.sub(r"```(?:json)?\n?", "", raw).strip().rstrip("`")
-    return json.loads(raw)
+    raw = re.sub(r"```(?:json)?\n?", "", raw).strip().rstrip("`").strip()
+    # JSON 블록만 추출 (앞뒤 텍스트 있을 경우 대비)
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        raise ValueError(f"Claude 응답에서 JSON을 찾을 수 없습니다.\n응답 내용: {raw[:200]}")
+    return json.loads(match.group(0))

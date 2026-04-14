@@ -18,11 +18,16 @@
   .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: #444; }
 
   /* 업로드 존 */
-  .upload-zone { border: 2px dashed #ccc; border-radius: 10px; padding: 48px 24px; text-align: center; cursor: pointer; transition: all .2s; }
+  .upload-zone { border: 2px dashed #ccc; border-radius: 10px; padding: 48px 24px; text-align: center; cursor: pointer; transition: all .2s; position: relative; }
   .upload-zone:hover, .upload-zone.drag-over { border-color: #6366f1; background: #f0f0ff; }
   .upload-zone p { color: #888; font-size: 14px; margin-top: 8px; }
   .upload-zone input { display: none; }
   #preview { width: 100%; border-radius: 8px; margin-top: 16px; display: none; max-height: 360px; object-fit: contain; }
+
+  /* 업로드 존 오버레이 (분석 중) */
+  .upload-overlay { display: none; position: absolute; inset: 0; border-radius: 8px; background: rgba(99,102,241,.08); align-items: center; justify-content: center; flex-direction: column; gap: 8px; }
+  .upload-overlay.show { display: flex; }
+  .upload-overlay p { font-size: 13px; color: #6366f1; font-weight: 500; }
 
   /* 버튼 */
   .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: 8px; border: none; font-size: 14px; font-weight: 500; cursor: pointer; transition: background .15s; }
@@ -40,8 +45,8 @@
   /* 폼 */
   .form-group { margin-bottom: 14px; }
   label { display: block; font-size: 12px; font-weight: 600; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; }
-  input[type=text], input[type=number], textarea, .tag-input { width: 100%; border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px; font-size: 14px; transition: border .15s; }
-  input:focus, textarea:focus { outline: none; border-color: #6366f1; }
+  input[type=text], input[type=number], textarea, select { width: 100%; border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px; font-size: 14px; transition: border .15s; background: #fff; }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: #6366f1; }
   textarea { resize: vertical; min-height: 80px; }
 
   .price-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -57,7 +62,8 @@
   .status.success { background: #dcfce7; color: #166534; display: block; }
   .status.error { background: #fee2e2; color: #991b1b; display: block; }
 
-  .spinner { width: 16px; height: 16px; border: 2px solid #f59e0b; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; }
+  .spinner { width: 16px; height: 16px; border: 2px solid #f59e0b; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; flex-shrink: 0; }
+  .spinner-indigo { border-color: #6366f1; border-top-color: transparent; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* 상품 목록 */
@@ -90,13 +96,13 @@
       </svg>
       <p>클릭하거나 이미지를 드래그하세요<br><small>jpg, png, gif, webp</small></p>
       <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp">
+      <div class="upload-overlay" id="uploadOverlay">
+        <div class="spinner spinner-indigo"></div>
+        <p>AI 분석 중...</p>
+      </div>
     </div>
     <img id="preview" alt="미리보기">
     <div class="btn-row">
-      <button class="btn btn-primary" id="analyzeBtn" disabled>
-        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        AI 분석하기
-      </button>
       <button class="btn btn-outline" id="resetBtn">초기화</button>
     </div>
     <div class="status" id="analyzeStatus"></div>
@@ -123,6 +129,12 @@
         <label>공급가 (원)</label>
         <input type="number" id="supplyPrice" placeholder="45000">
       </div>
+    </div>
+    <div class="form-group">
+      <label>카테고리</label>
+      <select id="categorySelect">
+        <option value="">로딩 중...</option>
+      </select>
     </div>
     <div class="form-group">
       <label>태그</label>
@@ -168,7 +180,7 @@ let currentFilename = null;
 const zone = document.getElementById('uploadZone');
 const fileInput = document.getElementById('fileInput');
 const preview = document.getElementById('preview');
-const analyzeBtn = document.getElementById('analyzeBtn');
+const overlay = document.getElementById('uploadOverlay');
 
 zone.addEventListener('click', () => fileInput.click());
 zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
@@ -180,29 +192,24 @@ function handleFile(file) {
   if (!file) return;
   preview.src = URL.createObjectURL(file);
   preview.style.display = 'block';
-  analyzeBtn.disabled = false;
-  analyzeBtn.dataset.file = file.name;
-  analyzeBtn._file = file;
+  analyzeFile(file);
 }
 
 document.getElementById('resetBtn').addEventListener('click', () => {
   preview.style.display = 'none';
   preview.src = '';
   fileInput.value = '';
-  analyzeBtn.disabled = true;
   currentFilename = null;
   document.getElementById('createBtn').disabled = true;
   setStatus('analyzeStatus', '', '');
   setStatus('createStatus', '', '');
+  overlay.classList.remove('show');
   clearForm();
 });
 
-// ── AI 분석 ───────────────────────────────────────────────────────────────────
-analyzeBtn.addEventListener('click', async () => {
-  const file = analyzeBtn._file;
-  if (!file) return;
-
-  analyzeBtn.disabled = true;
+// ── AI 분석 (업로드 즉시 자동 실행) ──────────────────────────────────────────
+async function analyzeFile(file) {
+  overlay.classList.add('show');
   setStatus('analyzeStatus', 'loading', 'Claude가 이미지를 분석하는 중...');
 
   const fd = new FormData();
@@ -219,9 +226,10 @@ analyzeBtn.addEventListener('click', async () => {
     setStatus('analyzeStatus', 'success', '분석 완료! 내용을 확인하고 수정한 뒤 등록하세요.');
   } catch (e) {
     setStatus('analyzeStatus', 'error', `분석 실패: ${e.message}`);
-    analyzeBtn.disabled = false;
+  } finally {
+    overlay.classList.remove('show');
   }
-});
+}
 
 function fillForm(data) {
   document.getElementById('productName').value = data.product_name || '';
@@ -231,7 +239,6 @@ function fillForm(data) {
   document.getElementById('productTag').value = data.product_tag || '';
   document.getElementById('description').value = data.description || '';
 
-  // 사이즈 선택
   document.querySelectorAll('.size-chip').forEach(chip => chip.classList.remove('selected'));
   (data.sizes || []).forEach(size => {
     const chip = document.querySelector(`.size-chip[data-size="${size}"]`);
@@ -251,6 +258,22 @@ document.getElementById('sizeOptions').addEventListener('click', e => {
   if (e.target.classList.contains('size-chip')) e.target.classList.toggle('selected');
 });
 
+// ── 카테고리 로드 ─────────────────────────────────────────────────────────────
+async function loadCategories() {
+  try {
+    const res = await fetch('/api/categories');
+    const data = await res.json();
+    const sel = document.getElementById('categorySelect');
+    const cats = data.categories || [];
+    if (!cats.length) { sel.innerHTML = '<option value="">카테고리 없음</option>'; return; }
+    sel.innerHTML = cats.map(c =>
+      `<option value="${c.category_no}">${'　'.repeat((c.category_depth||1)-1)}${c.category_name}</option>`
+    ).join('');
+  } catch(e) {
+    document.getElementById('categorySelect').innerHTML = '<option value="">카테고리 로드 실패</option>';
+  }
+}
+
 // ── 상품 등록 ─────────────────────────────────────────────────────────────────
 document.getElementById('createBtn').addEventListener('click', async () => {
   const createBtn = document.getElementById('createBtn');
@@ -258,6 +281,7 @@ document.getElementById('createBtn').addEventListener('click', async () => {
   setStatus('createStatus', 'loading', '카페24에 등록 중...');
 
   const sizes = [...document.querySelectorAll('.size-chip.selected')].map(c => c.dataset.size);
+  const categoryNo = parseInt(document.getElementById('categorySelect').value) || 0;
 
   const body = {
     product_name: document.getElementById('productName').value,
@@ -269,16 +293,21 @@ document.getElementById('createBtn').addEventListener('click', async () => {
     product_tag: document.getElementById('productTag').value,
     image_filename: currentFilename || '',
     sizes,
+    category_no: categoryNo,
   };
 
   try {
     const res = await fetch('/api/products', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     if (!res.ok) { const e = await res.json(); throw new Error(JSON.stringify(e.detail || e)); }
     const data = await res.json();
-    const adminLink = data.admin_url
-      ? ` <a href="${data.admin_url}" target="_blank" style="color:#166534;font-weight:600;text-decoration:underline">📷 이미지 등록하기 →</a>`
+
+    const shopLink = data.shop_url
+      ? ` <a href="${data.shop_url}" target="_blank" style="color:#166534;font-weight:600;text-decoration:underline">쇼핑몰에서 보기 →</a>`
       : '';
-    setStatus('createStatus', 'success', `${data.message} — 코드: ${data.product_code}<br><small style="color:#444">이미지는 카페24 어드민에서 직접 등록하세요.${adminLink}</small>`);
+    const imgNote = data.image_uploaded
+      ? '<br><small style="color:#444">✅ 이미지도 자동 등록됨</small>'
+      : '<br><small style="color:#888">⚠️ 이미지 자동 등록은 서버 시작 후 약 10초 후 활성화됩니다.</small>';
+    setStatus('createStatus', 'success', `${data.message} — 코드: ${data.product_code}${shopLink}${imgNote}`);
     loadProducts();
   } catch (e) {
     setStatus('createStatus', 'error', `등록 실패: ${e.message}`);
@@ -321,6 +350,7 @@ function setStatus(id, type, msg) {
 }
 
 // 초기 로드
+loadCategories();
 loadProducts();
 </script>
 </body>

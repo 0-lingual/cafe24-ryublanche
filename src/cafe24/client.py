@@ -36,7 +36,8 @@ class Cafe24Client:
 
     def post(self, path: str, body: dict) -> dict:
         resp = self.session.post(f"{BASE_URL}{path}", json=body)
-        resp.raise_for_status()
+        if not resp.ok:
+            raise ValueError(f"[{resp.status_code}] {path}\n{resp.text}")
         return resp.json()
 
     def put(self, path: str, body: dict) -> dict:
