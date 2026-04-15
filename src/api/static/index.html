@@ -76,6 +76,25 @@
   .product-card .price { font-size: 13px; color: #6366f1; margin-top: 2px; }
   .product-card .no { font-size: 11px; color: #aaa; margin-top: 2px; }
   .empty { text-align: center; color: #aaa; padding: 32px; font-size: 14px; }
+
+  /* 본문 구성 */
+  .body-slot { display: flex; gap: 16px; margin-bottom: 20px; align-items: flex-start; }
+  .body-img-box { flex-shrink: 0; width: 180px; height: 180px; border: 2px dashed #ccc; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; position: relative; transition: border-color .2s; }
+  .body-img-box:hover { border-color: #6366f1; }
+  .body-img-box img { width: 100%; height: 100%; object-fit: cover; }
+  .body-img-box .placeholder { color: #bbb; font-size: 12px; text-align: center; padding: 8px; pointer-events: none; }
+  .body-img-box input { display: none; }
+  .body-text-area { flex: 1; }
+  .body-text-area textarea { width: 100%; height: 160px; resize: vertical; }
+
+  .body-img-only-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 8px; }
+  .body-img-only-box { height: 160px; border: 2px dashed #ccc; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; position: relative; transition: border-color .2s; }
+  .body-img-only-box:hover { border-color: #6366f1; }
+  .body-img-only-box img { width: 100%; height: 100%; object-fit: cover; }
+  .body-img-only-box .placeholder { color: #bbb; font-size: 12px; text-align: center; padding: 4px; pointer-events: none; }
+  .body-img-only-box input { display: none; }
+  .btn-ghost { background: #f5f5f5; color: #555; border: 1px dashed #ccc; }
+  .btn-ghost:hover { background: #efefef; border-color: #aaa; }
 </style>
 </head>
 <body>
@@ -151,11 +170,6 @@
         <span class="size-chip" data-size="XL">XL</span>
       </div>
     </div>
-    <div class="form-group">
-      <label>상세 설명</label>
-      <textarea id="description" rows="5" placeholder="상세 설명..."></textarea>
-    </div>
-
     <div class="btn-row">
       <button class="btn btn-success" id="createBtn" disabled>
         <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg>
@@ -163,6 +177,26 @@
       </button>
     </div>
     <div class="status" id="createStatus"></div>
+  </div>
+
+  <!-- 본문 구성 -->
+  <div class="card full-width" id="bodySection">
+    <h2>3. 본문 구성</h2>
+
+    <!-- 이미지 1~4: 이미지 + 텍스트 -->
+    <div id="bodySlots"></div>
+
+    <!-- 이미지 5~15: 이미지만 -->
+    <div id="bodyExtraSection" style="margin-top:16px;">
+      <label style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.4px;">이미지 전용 슬롯 (5번~)</label>
+      <div class="body-img-only-grid" id="bodyExtraGrid"></div>
+      <button class="btn btn-ghost" id="addExtraBtn" style="margin-top:12px;font-size:13px;">+ 이미지 추가하기</button>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="genBodyTextBtn" disabled>✨ 본문 텍스트 자동 생성</button>
+    </div>
+    <div class="status" id="bodyStatus"></div>
   </div>
 
   <!-- 하단: 상품 목록 -->
@@ -175,6 +209,130 @@
 
 <script>
 let currentFilename = null;
+
+// ── 본문 구성 ─────────────────────────────────────────────────────────────────
+// bodySlots[0..3]: { filename, text } — 이미지+텍스트 슬롯 (최대 4개)
+// bodyExtras[4..14]: { filename } — 이미지 전용 슬롯
+const bodySlots = [null, null, null, null];   // 최대 4슬롯
+const bodyExtras = [];                         // 5번 이후 (최대 11개)
+
+function renderBodySlots() {
+  const container = document.getElementById('bodySlots');
+  container.innerHTML = '';
+  for (let i = 0; i < 4; i++) {
+    const slot = bodySlots[i];
+    const div = document.createElement('div');
+    div.className = 'body-slot';
+    div.innerHTML = `
+      <div class="body-img-box" id="bodyImgBox${i}">
+        ${slot ? `<img src="/uploads/${slot.filename}" alt="">` : `<div class="placeholder">📷<br>이미지 ${i+1}<br>(클릭)</div>`}
+        <input type="file" id="bodyFileInput${i}" accept=".jpg,.jpeg,.png,.gif,.webp">
+      </div>
+      <div class="body-text-area">
+        <label style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.4px;">본문 텍스트 ${i+1}</label>
+        <textarea id="bodyText${i}" placeholder="이미지 업로드 후 자동 생성됩니다. 직접 수정도 가능해요.">${slot ? (slot.text || '') : ''}</textarea>
+      </div>`;
+    container.appendChild(div);
+
+    document.getElementById(`bodyImgBox${i}`).addEventListener('click', () => {
+      document.getElementById(`bodyFileInput${i}`).click();
+    });
+    document.getElementById(`bodyFileInput${i}`).addEventListener('change', e => {
+      uploadBodyImage(e.target.files[0], i, false);
+    });
+    document.getElementById(`bodyText${i}`).addEventListener('input', e => {
+      if (!bodySlots[i]) bodySlots[i] = {};
+      bodySlots[i].text = e.target.value;
+    });
+  }
+  updateGenBodyTextBtn();
+}
+
+function renderBodyExtras() {
+  const grid = document.getElementById('bodyExtraGrid');
+  grid.innerHTML = '';
+  bodyExtras.forEach((slot, idx) => {
+    const div = document.createElement('div');
+    div.className = 'body-img-only-box';
+    div.innerHTML = `
+      ${slot ? `<img src="/uploads/${slot.filename}" alt="">` : `<div class="placeholder">📷<br>이미지 ${idx+5}</div>`}
+      <input type="file" accept=".jpg,.jpeg,.png,.gif,.webp" style="display:none">`;
+    grid.appendChild(div);
+
+    div.addEventListener('click', () => div.querySelector('input').click());
+    div.querySelector('input').addEventListener('change', e => {
+      uploadBodyImage(e.target.files[0], idx + 4, true);
+    });
+  });
+
+  // 최대 15장 (슬롯 4 + 엑스트라 11)
+  const total = 4 + bodyExtras.length;
+  document.getElementById('addExtraBtn').style.display = total >= 15 ? 'none' : '';
+}
+
+function updateGenBodyTextBtn() {
+  const allFilled = bodySlots.every(s => s && s.filename);
+  document.getElementById('genBodyTextBtn').disabled = !allFilled;
+}
+
+async function uploadBodyImage(file, slotIndex, isExtra) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/api/body-images', { method: 'POST', body: fd });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
+    const { filename } = await res.json();
+
+    if (!isExtra) {
+      bodySlots[slotIndex] = { filename, text: bodySlots[slotIndex]?.text || '' };
+      renderBodySlots();
+    } else {
+      const extraIdx = slotIndex - 4;
+      bodyExtras[extraIdx] = { filename };
+      renderBodyExtras();
+    }
+  } catch(e) {
+    alert(`이미지 업로드 실패: ${e.message}`);
+  }
+}
+
+document.getElementById('addExtraBtn').addEventListener('click', () => {
+  if (4 + bodyExtras.length >= 15) return;
+  bodyExtras.push(null);
+  renderBodyExtras();
+});
+
+document.getElementById('genBodyTextBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('genBodyTextBtn');
+  btn.disabled = true;
+  setStatus('bodyStatus', 'loading', 'Claude가 본문 텍스트를 생성하는 중... (30초 정도 소요될 수 있어요)');
+
+  const filenames = bodySlots.filter(s => s && s.filename).map(s => s.filename);
+  try {
+    const res = await fetch('/api/analyze-body', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filenames }),
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
+    const { texts } = await res.json();
+
+    texts.forEach((text, i) => {
+      if (bodySlots[i]) bodySlots[i].text = text;
+      const ta = document.getElementById(`bodyText${i}`);
+      if (ta) ta.value = text;
+    });
+    setStatus('bodyStatus', 'success', '✅ 본문 텍스트 자동 생성 완료! 내용을 확인하고 수정하세요.');
+  } catch(e) {
+    setStatus('bodyStatus', 'error', `텍스트 생성 실패: ${e.message}`);
+    btn.disabled = false;
+  }
+});
+
+// 초기 렌더링
+renderBodySlots();
+renderBodyExtras();
 
 // ── 업로드 존 ─────────────────────────────────────────────────────────────────
 const zone = document.getElementById('uploadZone');
@@ -237,7 +395,6 @@ function fillForm(data) {
   document.getElementById('price').value = data.price || '';
   document.getElementById('supplyPrice').value = data.supply_price || '';
   document.getElementById('productTag').value = data.product_tag || '';
-  document.getElementById('description').value = data.description || '';
 
   document.querySelectorAll('.size-chip').forEach(chip => chip.classList.remove('selected'));
   (data.sizes || []).forEach(size => {
@@ -247,7 +404,7 @@ function fillForm(data) {
 }
 
 function clearForm() {
-  ['productName','simpleDesc','price','supplyPrice','productTag','description'].forEach(id => {
+  ['productName','simpleDesc','price','supplyPrice','productTag'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.querySelectorAll('.size-chip').forEach(c => c.classList.remove('selected'));
@@ -283,17 +440,28 @@ document.getElementById('createBtn').addEventListener('click', async () => {
   const sizes = [...document.querySelectorAll('.size-chip.selected')].map(c => c.dataset.size);
   const categoryNo = parseInt(document.getElementById('categorySelect').value) || 0;
 
+  // 본문 데이터 수집
+  const bodyImageFilenames = [
+    ...bodySlots.filter(s => s && s.filename).map(s => s.filename),
+    ...bodyExtras.filter(s => s && s.filename).map(s => s.filename),
+  ];
+  const bodyTexts = bodySlots.map((s, i) => {
+    const ta = document.getElementById(`bodyText${i}`);
+    return ta ? ta.value : (s?.text || '');
+  });
+
   const body = {
     product_name: document.getElementById('productName').value,
     supply_product_name: document.getElementById('productName').value,
     price: document.getElementById('price').value,
     supply_price: document.getElementById('supplyPrice').value,
     simple_description: document.getElementById('simpleDesc').value,
-    description: document.getElementById('description').value,
     product_tag: document.getElementById('productTag').value,
     image_filename: currentFilename || '',
     sizes,
     category_no: categoryNo,
+    body_image_filenames: bodyImageFilenames,
+    body_texts: bodyTexts,
   };
 
   try {
