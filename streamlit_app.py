@@ -205,7 +205,9 @@ with col_img:
                     st.session_state["f_price"] = str(result.get("price", ""))
                     st.session_state["f_supply_price"] = str(result.get("supply_price", ""))
                     st.session_state["f_tags"] = result.get("product_tag", "")
-                    st.session_state["f_sizes"] = result.get("sizes", [])
+                    ai_sizes = [s for s in result.get("sizes", []) if s in ["FREE", "XS", "S", "M", "L", "XL"]]
+                    st.session_state["f_sizes"] = ai_sizes
+                    st.session_state["f_sizes_select"] = ai_sizes  # multiselect widget key
                     st.success("분석 완료! 상품 정보를 확인하고 수정 후 등록하세요.")
                 except Exception as e:
                     st.error(f"분석 실패: {e}")
@@ -299,8 +301,9 @@ for i in range(4):
         if st.session_state.body_slots[i] is not None:
             st.session_state.body_slots[i]["text"] = body_text
 
-filled_slots = [s for s in st.session_state.body_slots if s and s.get("bytes")]
-gen_disabled = len(filled_slots) == 0
+# (슬롯 인덱스 보존) 채워진 슬롯의 (인덱스, 슬롯) 쌍
+filled_indexed = [(i, s) for i, s in enumerate(st.session_state.body_slots) if s and s.get("bytes")]
+gen_disabled = len(filled_indexed) == 0
 
 if st.button(
     "✨ 본문 텍스트 자동 생성",
@@ -309,11 +312,12 @@ if st.button(
 ):
     with st.spinner("Claude가 본문 텍스트를 생성하는 중... (30초 정도 소요될 수 있어요)"):
         try:
-            tmp_paths = [save_upload(s["bytes"], s["name"]) for s in filled_slots]
+            tmp_paths = [save_upload(s["bytes"], s["name"]) for _, s in filled_indexed]
             texts = analyze_body_images(tmp_paths)
-            for i, text in enumerate(texts):
-                if st.session_state.body_slots[i] is not None:
-                    st.session_state.body_slots[i]["text"] = text
+            for (slot_idx, _), text in zip(filled_indexed, texts):
+                st.session_state.body_slots[slot_idx]["text"] = text
+                # text_area widget의 session_state 키도 직접 업데이트 (value= 파라미터는 무시됨)
+                st.session_state[f"body_text_area_{slot_idx}"] = text
             st.success("본문 텍스트 자동 생성 완료! 내용을 확인하고 수정하세요.")
             st.rerun()
         except Exception as e:
@@ -456,4 +460,8 @@ with st.expander("📦 등록된 상품 목록", expanded=False):
                 if p.get("detail_image"):
                     st.image(p["detail_image"], use_container_width=True)
                 st.caption(f"**{p.get('product_name', '-')}**")
-                st.caption(f"{int(p.get('price', 0)):,}원 · No.{p.get('product_no')}")
+                try:
+                    price_int = int(float(str(p.get("price") or 0)))
+                except (ValueError, TypeError):
+                    price_int = 0
+                st.caption(f"{price_int:,}원 · No.{p.get('product_no')}")
