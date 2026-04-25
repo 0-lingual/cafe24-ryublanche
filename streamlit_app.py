@@ -186,13 +186,15 @@ def load_categories() -> list[dict]:
         return st.session_state.categories
     try:
         result = _with_retry(
-            lambda c: c.get("/categories", params={"display_group": 1, "limit": 100})
+            lambda c: c.get("/categories", params={"limit": 200})
         )
-        cats = [cat for cat in result.get("categories", []) if cat.get("use_display") == "T"]
+        # use_display 필터 없이 전체 반환 (쇼핑몰 설정마다 값이 다름)
+        cats = result.get("categories", [])
         st.session_state.categories = cats
         return cats
     except Exception as e:
         st.warning(f"카테고리 로드 실패: {e}")
+        st.exception(e)
         st.session_state.categories = []
         return []
 
@@ -296,6 +298,13 @@ st.divider()
 st.subheader("3. 본문 구성")
 st.caption("이미지 1~4에는 텍스트가 함께 표시됩니다. 이미지 5번부터는 이미지만 표시됩니다.")
 
+# 위젯 렌더 전에 pending 텍스트를 위젯 키로 이전
+# (버튼 핸들러에서 이미 렌더된 위젯 키를 직접 수정하면 StreamlitAPIException 발생)
+for _i in range(4):
+    _pk = f"body_text_pending_{_i}"
+    if _pk in st.session_state:
+        st.session_state[f"body_text_area_{_i}"] = st.session_state.pop(_pk)
+
 for i in range(4):
     slot = st.session_state.body_slots[i]
     c_img, c_text = st.columns([1, 2], gap="medium")
@@ -346,8 +355,8 @@ if st.button(
             texts = analyze_body_images(tmp_paths)
             for (slot_idx, _), text in zip(filled_indexed, texts):
                 st.session_state.body_slots[slot_idx]["text"] = text
-                # text_area widget의 session_state 키도 직접 업데이트 (value= 파라미터는 무시됨)
-                st.session_state[f"body_text_area_{slot_idx}"] = text
+                # pending 키에 저장 → rerun 후 위젯 렌더 전에 위젯 키로 이전됨
+                st.session_state[f"body_text_pending_{slot_idx}"] = text
             st.success("본문 텍스트 자동 생성 완료! 내용을 확인하고 수정하세요.")
             st.rerun()
         except Exception as e:
