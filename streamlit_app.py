@@ -84,11 +84,24 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 # ── 토큰 관리 ──────────────────────────────────────────────────────────────────
+def _do_refresh() -> str:
+    """
+    refresh_token으로 access_token 갱신.
+    Cafe24는 refresh 시 새 refresh_token도 발급(회전)하므로 세션에 저장.
+    """
+    # 세션에 최신 refresh_token이 있으면 그것을 사용 (회전 토큰 대응)
+    rt = st.session_state.get("refresh_token") or str(st.secrets["CAFE24_REFRESH_TOKEN"])
+    new_data = refresh_access_token(rt)
+    st.session_state["access_token"] = new_data["access_token"]
+    st.session_state["token_expires_at"] = new_data.get("expires_at", "")
+    # 새 refresh_token도 세션에 저장 (다음 갱신에 사용)
+    if new_data.get("refresh_token"):
+        st.session_state["refresh_token"] = new_data["refresh_token"]
+    return new_data["access_token"]
+
+
 def _get_access_token() -> str:
-    """
-    유효한 access_token 반환. 오류 시 st.stop() 대신 예외 raise.
-    호출 측에서 try/except로 처리해야 함.
-    """
+    """유효한 access_token 반환. 만료 시 자동 갱신."""
     from datetime import datetime, timedelta
 
     # 세션 캐시 확인
@@ -100,30 +113,46 @@ def _get_access_token() -> str:
         except ValueError:
             pass
 
-    access_token = str(st.secrets["CAFE24_ACCESS_TOKEN"])
-    refresh_token = str(st.secrets["CAFE24_REFRESH_TOKEN"])
+    # secrets의 토큰 만료 여부 확인
     expires_at_str = str(st.secrets.get("CAFE24_TOKEN_EXPIRES_AT", ""))
-
-    # 만료 확인
     if expires_at_str:
         try:
             expiry = datetime.fromisoformat(expires_at_str)
             if datetime.now() < expiry - timedelta(minutes=10):
-                st.session_state["access_token"] = access_token
+                token = str(st.secrets["CAFE24_ACCESS_TOKEN"])
+                st.session_state["access_token"] = token
                 st.session_state["token_expires_at"] = expires_at_str
-                return access_token
+                return token
         except ValueError:
             pass
 
-    # 갱신
-    new_data = refresh_access_token(refresh_token)
-    st.session_state["access_token"] = new_data["access_token"]
-    st.session_state["token_expires_at"] = new_data.get("expires_at", "")
-    return new_data["access_token"]
+    # 만료됐으면 갱신
+    return _do_refresh()
 
 
 def get_client() -> Cafe24Client:
     return Cafe24Client(_get_access_token())
+
+
+def _with_retry(fn):
+    """
+    fn(client) → result.
+    401 발생 시 세션 토큰 캐시를 비우고 강제 갱신 후 1회 재시도.
+    모든 Cafe24 API 호출에 사용 권장.
+    """
+    try:
+        return fn(get_client())
+    except Exception as e:
+        is_401 = "401" in str(e) or (
+            hasattr(e, "response") and e.response is not None and e.response.status_code == 401
+        )
+        if not is_401:
+            raise
+        # 캐시 비우고 강제 갱신
+        st.session_state.pop("access_token", None)
+        st.session_state.pop("token_expires_at", None)
+        new_token = _do_refresh()
+        return fn(Cafe24Client(new_token))
 
 
 # ── 임시 파일 저장 ─────────────────────────────────────────────────────────────
@@ -156,9 +185,10 @@ def load_categories() -> list[dict]:
     if st.session_state.categories is not None:
         return st.session_state.categories
     try:
-        client = get_client()
-        result = client.get("/categories", params={"display_group": 1, "limit": 100})
-        cats = [c for c in result.get("categories", []) if c.get("use_display") == "T"]
+        result = _with_retry(
+            lambda c: c.get("/categories", params={"display_group": 1, "limit": 100})
+        )
+        cats = [cat for cat in result.get("categories", []) if cat.get("use_display") == "T"]
         st.session_state.categories = cats
         return cats
     except Exception as e:
@@ -322,6 +352,7 @@ if st.button(
             st.rerun()
         except Exception as e:
             st.error(f"텍스트 생성 실패: {e}")
+            st.exception(e)  # Streamlit Cloud가 메시지를 리댁트해도 traceback은 표시됨
 
 st.markdown("**이미지 전용 슬롯 (5번~)**")
 extra_files = st.file_uploader(
@@ -357,8 +388,6 @@ if not register_ready:
 if st.button("✅ 카페24에 등록", type="primary", disabled=not register_ready):
     with st.spinner("카페24에 등록 중..."):
         try:
-            client = get_client()
-
             all_body_paths: list[Path] = []
             all_body_texts: list[str] = []
             for slot in st.session_state.body_slots:
@@ -391,18 +420,21 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
                 payload["option_list_type"] = "S"
                 payload["options"] = [{"name": "사이즈", "value": sizes}]
 
-            result = client.create_product(payload)
+            # 상품 등록 (401 시 자동 갱신 재시도)
+            result = _with_retry(lambda c: c.create_product(payload))
             product = result.get("product", {})
             product_no = product.get("product_no")
 
+            # 카테고리 할당
             if category_no and product_no:
                 try:
-                    client.post(f"/categories/{category_no}/products", {
+                    _with_retry(lambda c: c.post(f"/categories/{category_no}/products", {
                         "request": {"product_no": [product_no]}
-                    })
+                    }))
                 except Exception as ce:
                     st.warning(f"카테고리 할당 실패: {ce}")
 
+            # 대표 이미지 업로드
             image_uploaded = False
             if st.session_state.main_img_bytes and product_no:
                 try:
@@ -411,9 +443,9 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
                         st.session_state.main_img_name or "main.jpg",
                     )
                     images = process_product_images(tmp_main)
-                    img_result = client.post(f"/products/{product_no}/images", {
+                    img_result = _with_retry(lambda c: c.post(f"/products/{product_no}/images", {
                         "request": {"image_upload_type": "B", **images}
-                    })
+                    }))
                     image_uploaded = any(
                         img_result.get("image", {}).get(k)
                         for k in ("detail_image", "list_image", "tiny_image", "small_image")
@@ -433,6 +465,7 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
 
         except Exception as e:
             st.error(f"등록 실패: {e}")
+            st.exception(e)
 
 st.divider()
 
@@ -443,8 +476,7 @@ with st.expander("📦 등록된 상품 목록", expanded=False):
 
     if st.session_state.product_list_cache is None:
         try:
-            client = get_client()
-            result = client.get_products(limit=12)
+            result = _with_retry(lambda c: c.get_products(limit=12))
             st.session_state.product_list_cache = result.get("products", [])
         except Exception as e:
             st.error(f"상품 목록 로드 실패: {e}")
