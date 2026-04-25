@@ -13,7 +13,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    """Anthropic 클라이언트 지연 초기화 (환경변수 설정 후 최초 호출 시 생성)"""
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    return _client
 
 SYSTEM_PROMPT = """당신은 패션 쇼핑몰 상품 등록 전문가입니다.
 상품 이미지를 보고 카페24 쇼핑몰에 등록할 정보를 JSON으로 반환하세요.
@@ -34,44 +42,25 @@ SYSTEM_PROMPT = """당신은 패션 쇼핑몰 상품 등록 전문가입니다.
 BODY_SYSTEM_PROMPT = """당신은 여성 패션 쇼핑몰의 카피라이터입니다.
 상품 본문 이미지들을 보고, 각 이미지에 어울리는 한국어 패션 카피 텍스트를 작성하세요.
 
-아래 형식과 톤앤매너를 반드시 따르세요:
+## STEP 1 — 이미지별 디자인 포인트 추출 (내부 분석, 출력하지 않음)
+전체 이미지를 통합 분석하여, 각 이미지에서 가장 눈에 띄는 시각적 특징을 1개씩 먼저 찾아라.
+예: 단추 디테일 / 밑단 커팅 / 원단 비침 / 레이어드 구성 / 다른 의류와의 조합 / 착용 실루엣 / 소재 텍스처 등
+이미지 번호별 역할(소개·핏·소재·스타일링)을 미리 고정하지 말고, 해당 이미지에서 실제로 보이는 것을 기반으로 판단하라.
 
-[이미지 1 텍스트 스타일]
-- 상품 전체를 소개하는 오프너 문장으로 시작 (1~2줄)
-- 이어서 핵심 특징 3가지를 짧은 문단으로 (각 1~2줄)
-- 이모지 적극 활용 (✨ 🌙 😊 💫 🤍 등)
-- 예시:
-  "✨ 이번 시즌 가장 사랑받을 아이템을 소개해요.
+## STEP 2 — 텍스트 작성 규칙
+각 이미지에 대해 STEP 1에서 찾은 시각적 특징을 반드시 1개 이상 구체적으로 언급하며 텍스트를 작성하라.
 
-  🌙 부드러운 소재감이 피부에 닿는 느낌까지 고려했어요.
-  하루종일 입어도 편안한 착용감을 자랑합니다.
+**톤앤매너**
+- 친근한 존댓말: `~에요`, `~이에요`, `~드려요` 어미 사용
+- 한 문장은 2~4어절로 짧게 끊기
+- 이모지는 줄 끝에만, 블록당 1~2개 이하로 절제
 
-  😊 어떤 하의와도 자연스럽게 어울리는 실루엣.
-  데일리부터 특별한 날까지, 어디서든 빛나는 아이템이에요."
+**분량**
+- 블록당 짧은 문장 2~4쌍 (총 4~8줄)
+- 문장 사이 빈 줄로 리듬감 부여
 
-[이미지 2 텍스트 스타일]
-- 실루엣과 핏에 집중하는 2~3줄 텍스트
-- 착용했을 때의 느낌과 보여지는 모습 묘사
-- 예시:
-  "적당한 루즈핏으로 체형에 상관없이 누구나 잘 어울려요.
-  떨어지는 라인이 자연스럽게 날씬해 보이는 효과까지."
-
-[이미지 3 텍스트 스타일]
-- 디테일, 소재, 봉제 등 제품 퀄리티 부각 (3줄)
-- 소재감이나 마감 처리 언급
-- 이모지 1~2개 포함
-- 예시:
-  "✨ 세심하게 마감된 솔기 처리로 오래 입어도 변형 없어요.
-  부드러운 텍스처가 고급스러운 느낌을 더해줍니다.
-  🤍 세탁 후에도 형태가 유지되는 고품질 원단을 사용했어요."
-
-[이미지 4 텍스트 스타일]
-- 스타일링 활용도와 착용 상황 제안 (2~3줄)
-- 다양한 코디법이나 계절 활용법 언급
-- 마무리 이모지 1개
-- 예시:
-  "캐주얼 스니커즈부터 힐까지, 어떤 신발과도 잘 어울려요.
-  출근룩은 물론 주말 나들이까지 폭넓게 활용 가능한 아이템 💫"
+**예시 (톤앤매너 참고용)**
+  "이거 하나로 분위기 완성되는\n레이어드 무드 티셔츠에요 ✨\n\n이너 + 랩 디자인이 합쳐진 느낌으로\n꾸민 듯 안 꾸민 듯 감성 제대로 🪐\n\n쇄골라인 자연스럽게 드러나서\n여리여리한 실루엣 완성 🤍"
 
 반드시 아래 JSON 형식만 반환하세요 (다른 텍스트 없이):
 {
@@ -105,7 +94,7 @@ def analyze_body_images(image_paths: list[Path]) -> list[str]:
 
     content.append({"type": "text", "text": "위 이미지들에 대한 본문 카피 텍스트를 작성해주세요."})
 
-    message = client.messages.create(
+    message = _get_client().messages.create(
         model="claude-opus-4-6",
         max_tokens=2048,
         system=BODY_SYSTEM_PROMPT,
@@ -130,7 +119,7 @@ def analyze_image(image_path: Path) -> dict:
 
     b64 = base64.standard_b64encode(img_bytes).decode()
 
-    message = client.messages.create(
+    message = _get_client().messages.create(
         model="claude-opus-4-6",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
