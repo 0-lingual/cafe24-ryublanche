@@ -243,7 +243,7 @@ with col_img:
                     st.error(f"분석 실패: {e}")
 
         if st.session_state.main_img_bytes:
-            st.image(st.session_state.main_img_bytes, use_container_width=True)
+            st.image(st.session_state.main_img_bytes, width="stretch")
 
     if st.button("초기화", key="reset_btn"):
         for k in ["main_file_id", "main_img_bytes", "main_img_name", "product_info",
@@ -317,7 +317,7 @@ for i in range(4):
             slot = st.session_state.body_slots[i]
 
         if slot and slot.get("bytes"):
-            st.image(slot["bytes"], use_container_width=True)
+            st.image(slot["bytes"], width="stretch")
 
     with c_text:
         default_text = slot["text"] if slot else ""
@@ -369,7 +369,7 @@ if st.session_state.body_extras:
     preview_cols = st.columns(n)
     for idx, extra in enumerate(st.session_state.body_extras):
         with preview_cols[idx % n]:
-            st.image(extra["bytes"], caption=f"이미지 {idx + 5}", use_container_width=True)
+            st.image(extra["bytes"], caption=f"이미지 {idx + 5}", width="stretch")
 
 st.divider()
 
@@ -490,7 +490,7 @@ with st.expander("📦 등록된 상품 목록", expanded=False):
         for idx, p in enumerate(products):
             with cols[idx % 4]:
                 if p.get("detail_image"):
-                    st.image(p["detail_image"], use_container_width=True)
+                    st.image(p["detail_image"], width="stretch")
                 st.caption(f"**{p.get('product_name', '-')}**")
                 try:
                     price_int = int(float(str(p.get("price") or 0)))

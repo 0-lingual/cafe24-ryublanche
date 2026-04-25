@@ -9,3 +9,4 @@ certs/key.pem
 certs/cert.pem
 uploads/
 .streamlit/secrets.toml
+uv.lock
