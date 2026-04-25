@@ -84,49 +84,70 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 # ── 토큰 관리 ──────────────────────────────────────────────────────────────────
+# st.cache_resource: 앱 인스턴스 수준 전역 캐시 (모든 세션 간 공유, 앱 재시작 시 초기화)
+# Cafe24 refresh 시 rotate된 새 refresh_token을 여기에 저장해 secrets 불일치 문제 방지
+@st.cache_resource
+def _token_store() -> dict:
+    """앱 인스턴스 전역 토큰 저장소. 최초 한 번만 초기화."""
+    return {"access_token": None, "refresh_token": None, "expires_at": None}
+
+
 def _do_refresh() -> str:
     """
     refresh_token으로 access_token 갱신.
-    Cafe24는 refresh 시 새 refresh_token도 발급(회전)하므로 세션에 저장.
+    Cafe24 rotate 정책: 매 refresh마다 새 refresh_token 발급.
+    → 전역 캐시(_token_store)에 저장해 secrets 구버전 문제 방지.
     """
-    # 세션에 최신 refresh_token이 있으면 그것을 사용 (회전 토큰 대응)
-    rt = st.session_state.get("refresh_token") or str(st.secrets["CAFE24_REFRESH_TOKEN"])
+    store = _token_store()
+    # 전역 캐시 → session_state → secrets 순으로 최신 refresh_token 우선 사용
+    rt = (
+        store.get("refresh_token")
+        or st.session_state.get("refresh_token")
+        or str(st.secrets["CAFE24_REFRESH_TOKEN"])
+    )
     new_data = refresh_access_token(rt)
-    st.session_state["access_token"] = new_data["access_token"]
-    st.session_state["token_expires_at"] = new_data.get("expires_at", "")
-    # 새 refresh_token도 세션에 저장 (다음 갱신에 사용)
-    if new_data.get("refresh_token"):
-        st.session_state["refresh_token"] = new_data["refresh_token"]
-    return new_data["access_token"]
+    # 전역 캐시 업데이트 (다음 세션도 최신 토큰 사용 가능)
+    store["access_token"] = new_data["access_token"]
+    store["expires_at"] = new_data.get("expires_at", "")
+    store["refresh_token"] = new_data.get("refresh_token") or rt
+    # session_state에도 동기화
+    st.session_state["access_token"] = store["access_token"]
+    st.session_state["token_expires_at"] = store["expires_at"]
+    st.session_state["refresh_token"] = store["refresh_token"]
+    return store["access_token"]
 
 
 def _get_access_token() -> str:
     """유효한 access_token 반환. 만료 시 자동 갱신."""
     from datetime import datetime, timedelta
 
-    # 세션 캐시 확인
-    if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+    def _not_expired(expires_at_str: str) -> bool:
         try:
-            expiry = datetime.fromisoformat(st.session_state["token_expires_at"])
-            if datetime.now() < expiry - timedelta(minutes=10):
-                return st.session_state["access_token"]
-        except ValueError:
-            pass
+            return datetime.now() < datetime.fromisoformat(expires_at_str) - timedelta(minutes=10)
+        except (ValueError, TypeError):
+            return False
 
-    # secrets의 토큰 만료 여부 확인
+    # 1순위: 전역 캐시 (다른 세션이 갱신한 최신 토큰)
+    store = _token_store()
+    if store.get("access_token") and _not_expired(store.get("expires_at", "")):
+        return store["access_token"]
+
+    # 2순위: session_state 캐시
+    if _not_expired(st.session_state.get("token_expires_at", "")):
+        return st.session_state["access_token"]
+
+    # 3순위: secrets의 access_token (만료 안됐을 때만)
     expires_at_str = str(st.secrets.get("CAFE24_TOKEN_EXPIRES_AT", ""))
-    if expires_at_str:
-        try:
-            expiry = datetime.fromisoformat(expires_at_str)
-            if datetime.now() < expiry - timedelta(minutes=10):
-                token = str(st.secrets["CAFE24_ACCESS_TOKEN"])
-                st.session_state["access_token"] = token
-                st.session_state["token_expires_at"] = expires_at_str
-                return token
-        except ValueError:
-            pass
+    if _not_expired(expires_at_str):
+        token = str(st.secrets["CAFE24_ACCESS_TOKEN"])
+        store["access_token"] = token
+        store["expires_at"] = expires_at_str
+        # secrets의 refresh_token도 캐시 (아직 store에 없을 경우)
+        if not store.get("refresh_token"):
+            store["refresh_token"] = str(st.secrets.get("CAFE24_REFRESH_TOKEN", ""))
+        return token
 
-    # 만료됐으면 갱신
+    # 모두 만료 → 갱신
     return _do_refresh()
 
 
@@ -137,8 +158,7 @@ def get_client() -> Cafe24Client:
 def _with_retry(fn):
     """
     fn(client) → result.
-    401 발생 시 세션 토큰 캐시를 비우고 강제 갱신 후 1회 재시도.
-    모든 Cafe24 API 호출에 사용 권장.
+    401 발생 시 전역·세션 캐시 비우고 강제 갱신 후 1회 재시도.
     """
     try:
         return fn(get_client())
@@ -148,7 +168,10 @@ def _with_retry(fn):
         )
         if not is_401:
             raise
-        # 캐시 비우고 강제 갱신
+        # 전역 캐시 + session_state 비우고 강제 갱신
+        store = _token_store()
+        store["access_token"] = None
+        store["expires_at"] = None
         st.session_state.pop("access_token", None)
         st.session_state.pop("token_expires_at", None)
         new_token = _do_refresh()
