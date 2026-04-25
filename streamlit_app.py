@@ -10,8 +10,10 @@ from pathlib import Path
 
 import streamlit as st
 
+# ── 페이지 설정 (반드시 최상단) ────────────────────────────────────────────────
+st.set_page_config(page_title="Ryublanche AX", page_icon="👗", layout="wide")
+
 # ── Secrets → os.environ (src.* 모듈 import 전에 반드시 실행) ──────────────
-# 로컬: .env 파일 사용 / Streamlit Cloud: st.secrets 사용
 _SECRET_KEYS = [
     "ANTHROPIC_API_KEY",
     "CAFE24_MALL_ID",
@@ -28,12 +30,53 @@ try:
 except Exception:
     pass  # 로컬 개발 시 .env가 처리함
 
-# ── 모듈 import (환경변수 설정 완료 후) ──────────────────────────────────────
-from src.ai.analyzer import analyze_body_images, analyze_image
-from src.api.processor import process_product_images
-from src.cafe24.auth import refresh_access_token
-from src.cafe24.client import Cafe24Client
-from src.utils import build_description_html
+
+# ── Secrets 사전 검사 (UI 렌더 전) ────────────────────────────────────────────
+def _check_secrets() -> bool:
+    """필수 Secrets 확인. 누락 시 설정 안내 화면 표시 후 False 반환."""
+    required = [
+        "CAFE24_ACCESS_TOKEN",
+        "CAFE24_REFRESH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CAFE24_MALL_ID",
+        "CAFE24_CLIENT_ID",
+        "CAFE24_CLIENT_SECRET",
+    ]
+    missing = []
+    try:
+        for k in required:
+            if k not in st.secrets:
+                missing.append(k)
+    except Exception:
+        missing = required
+
+    if missing:
+        st.title("👗 Ryublanche AX")
+        st.error("**⚙️ Streamlit Secrets 설정이 필요합니다**")
+        st.markdown(
+            "Streamlit Cloud 상단 메뉴 **Manage app → Settings → Secrets** 에 아래 내용을 붙여넣으세요."
+        )
+        st.code(
+            "\n".join(f'{k} = "..."' for k in missing),
+            language="toml",
+        )
+        st.info(
+            "`.streamlit/secrets.toml.example` 파일을 참고하거나, "
+            "로컬의 `.streamlit/secrets.toml` 내용을 그대로 붙여넣으면 됩니다."
+        )
+        return False
+    return True
+
+
+if not _check_secrets():
+    st.stop()  # ← 최상단에서만 stop (컬럼 내부에서 호출 안 함)
+
+# ── 모듈 import (Secrets 검증 + 환경변수 설정 완료 후) ───────────────────────
+from src.ai.analyzer import analyze_body_images, analyze_image  # noqa: E402
+from src.api.processor import process_product_images  # noqa: E402
+from src.cafe24.auth import refresh_access_token  # noqa: E402
+from src.cafe24.client import Cafe24Client  # noqa: E402
+from src.utils import build_description_html  # noqa: E402
 
 # ── 임시 파일 디렉토리 ─────────────────────────────────────────────────────────
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "ryublanche_ax"
@@ -43,13 +86,12 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # ── 토큰 관리 ──────────────────────────────────────────────────────────────────
 def _get_access_token() -> str:
     """
-    유효한 access_token 반환.
-    - 세션에 유효한 토큰 있으면 바로 반환
-    - 없으면 st.secrets에서 로드 → 만료 시 refresh_token으로 갱신
+    유효한 access_token 반환. 오류 시 st.stop() 대신 예외 raise.
+    호출 측에서 try/except로 처리해야 함.
     """
     from datetime import datetime, timedelta
 
-    # 세션에 캐싱된 토큰 확인
+    # 세션 캐시 확인
     if "access_token" in st.session_state and "token_expires_at" in st.session_state:
         try:
             expiry = datetime.fromisoformat(st.session_state["token_expires_at"])
@@ -58,22 +100,11 @@ def _get_access_token() -> str:
         except ValueError:
             pass
 
-    # st.secrets에서 토큰 로드
-    try:
-        access_token = str(st.secrets["CAFE24_ACCESS_TOKEN"])
-        refresh_token = str(st.secrets["CAFE24_REFRESH_TOKEN"])
-        expires_at_str = str(st.secrets.get("CAFE24_TOKEN_EXPIRES_AT", ""))
-    except KeyError as e:
-        st.error(
-            f"**토큰 설정 누락: {e}**\n\n"
-            "Streamlit Cloud → App settings → Secrets에 아래 키를 추가하세요:\n"
-            "- `CAFE24_ACCESS_TOKEN`\n"
-            "- `CAFE24_REFRESH_TOKEN`\n"
-            "- `CAFE24_TOKEN_EXPIRES_AT` (선택)"
-        )
-        st.stop()
+    access_token = str(st.secrets["CAFE24_ACCESS_TOKEN"])
+    refresh_token = str(st.secrets["CAFE24_REFRESH_TOKEN"])
+    expires_at_str = str(st.secrets.get("CAFE24_TOKEN_EXPIRES_AT", ""))
 
-    # 만료 시간 확인
+    # 만료 확인
     if expires_at_str:
         try:
             expiry = datetime.fromisoformat(expires_at_str)
@@ -84,18 +115,11 @@ def _get_access_token() -> str:
         except ValueError:
             pass
 
-    # 토큰 갱신
-    try:
-        new_data = refresh_access_token(refresh_token)
-        st.session_state["access_token"] = new_data["access_token"]
-        st.session_state["token_expires_at"] = new_data.get("expires_at", "")
-        return new_data["access_token"]
-    except Exception as e:
-        st.error(
-            f"**토큰 갱신 실패: {e}**\n\n"
-            "카페24 재인증 후 Secrets의 `CAFE24_ACCESS_TOKEN`, `CAFE24_REFRESH_TOKEN`을 업데이트하세요."
-        )
-        st.stop()
+    # 갱신
+    new_data = refresh_access_token(refresh_token)
+    st.session_state["access_token"] = new_data["access_token"]
+    st.session_state["token_expires_at"] = new_data.get("expires_at", "")
+    return new_data["access_token"]
 
 
 def get_client() -> Cafe24Client:
@@ -104,7 +128,6 @@ def get_client() -> Cafe24Client:
 
 # ── 임시 파일 저장 ─────────────────────────────────────────────────────────────
 def save_upload(img_bytes: bytes, original_name: str) -> Path:
-    """업로드 바이트를 임시 파일로 저장 후 Path 반환"""
     suffix = Path(original_name).suffix.lower() or ".jpg"
     path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
     path.write_bytes(img_bytes)
@@ -114,15 +137,14 @@ def save_upload(img_bytes: bytes, original_name: str) -> Path:
 # ── 세션 상태 초기화 ───────────────────────────────────────────────────────────
 def _init():
     defaults = {
-        "main_file_id": None,      # 분석한 파일의 고유 ID (재분석 방지)
-        "main_img_bytes": None,    # 대표 이미지 바이트
-        "main_img_name": None,     # 대표 이미지 원본 파일명
-        "product_info": {},        # AI 분석 결과
-        # body_slots[i]: {"bytes": bytes, "name": str, "text": str} or None
+        "main_file_id": None,
+        "main_img_bytes": None,
+        "main_img_name": None,
+        "product_info": {},
         "body_slots": [None, None, None, None],
-        # body_extras[i]: {"bytes": bytes, "name": str}
         "body_extras": [],
-        "categories": None,        # 카테고리 목록 캐시
+        "categories": None,
+        "product_list_cache": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -141,35 +163,32 @@ def load_categories() -> list[dict]:
         return cats
     except Exception as e:
         st.warning(f"카테고리 로드 실패: {e}")
+        st.session_state.categories = []
         return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 앱 시작
+# 앱 UI
 # ══════════════════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="Ryublanche AX", page_icon="👗", layout="wide")
 _init()
 
 st.title("👗 Ryublanche AX")
 st.caption("카페24 AI 상품 자동 등록 어드민")
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Section 1+2: 대표 이미지 & 상품 정보
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Section 1 + 2: 대표 이미지 & 상품 정보 ───────────────────────────────────
 col_img, col_form = st.columns([1, 1], gap="large")
 
 with col_img:
     st.subheader("1. 대표 이미지 업로드")
     main_file = st.file_uploader(
-        "이미지를 업로드하세요",
+        "이미지 업로드",
         type=["jpg", "jpeg", "png", "gif", "webp"],
         key="main_uploader",
         label_visibility="collapsed",
     )
 
     if main_file is not None:
-        # 새 파일 업로드 시 AI 자동 분석
         if main_file.file_id != st.session_state.main_file_id:
             img_bytes = main_file.read()
             st.session_state.main_img_bytes = img_bytes
@@ -181,7 +200,6 @@ with col_img:
                     tmp_path = save_upload(img_bytes, main_file.name)
                     result = analyze_image(tmp_path)
                     st.session_state.product_info = result
-                    # 분석 결과를 폼 키에 미리 기록 (widget 렌더 전 설정)
                     st.session_state["f_product_name"] = result.get("product_name", "")
                     st.session_state["f_simple_desc"] = result.get("simple_description", "")
                     st.session_state["f_price"] = str(result.get("price", ""))
@@ -192,7 +210,6 @@ with col_img:
                 except Exception as e:
                     st.error(f"분석 실패: {e}")
 
-        # 이미지 미리보기
         if st.session_state.main_img_bytes:
             st.image(st.session_state.main_img_bytes, use_container_width=True)
 
@@ -200,7 +217,12 @@ with col_img:
         for k in ["main_file_id", "main_img_bytes", "main_img_name", "product_info",
                   "f_product_name", "f_simple_desc", "f_price", "f_supply_price",
                   "f_tags", "f_sizes"]:
-            st.session_state[k] = None if "bytes" in k or k == "main_file_id" else ([] if k == "f_sizes" else "")
+            if "bytes" in k or k == "main_file_id":
+                st.session_state[k] = None
+            elif k == "f_sizes":
+                st.session_state[k] = []
+            else:
+                st.session_state[k] = ""
         st.session_state.product_info = {}
         st.rerun()
 
@@ -208,46 +230,40 @@ with col_form:
     st.subheader("2. 상품 정보 확인 & 수정")
 
     product_name = st.text_input(
-        "상품명",
-        placeholder="AI 분석 후 자동 입력됩니다",
-        key="f_product_name",
+        "상품명", placeholder="AI 분석 후 자동 입력됩니다", key="f_product_name"
     )
     simple_desc = st.text_input(
-        "한 줄 소개",
-        placeholder="간단한 상품 소개",
-        key="f_simple_desc",
+        "한 줄 소개", placeholder="간단한 상품 소개", key="f_simple_desc"
     )
 
-    price_col, supply_col = st.columns(2)
-    with price_col:
+    pc, sc = st.columns(2)
+    with pc:
         price = st.text_input("판매가 (원)", placeholder="89000", key="f_price")
-    with supply_col:
+    with sc:
         supply_price = st.text_input("공급가 (원)", placeholder="45000", key="f_supply_price")
 
-    # 카테고리
+    # 카테고리 — try/except 내부, 실패해도 나머지 렌더 계속
     cats = load_categories()
-    cat_options = {f"{'　' * ((c.get('category_depth', 1) - 1))} {c['category_name']}": c["category_no"] for c in cats}
+    cat_options = {
+        f"{'　' * max(c.get('category_depth', 1) - 1, 0)} {c['category_name']}": c["category_no"]
+        for c in cats
+    }
     cat_labels = ["(카테고리 없음)"] + list(cat_options.keys())
     selected_cat_label = st.selectbox("카테고리", cat_labels, key="f_category")
     category_no = cat_options.get(selected_cat_label.strip(), 0)
 
     tags = st.text_input("태그 (쉼표 구분)", placeholder="투피스,세트,여름,데일리", key="f_tags")
 
-    # 사이즈 멀티셀렉트
     size_options = ["FREE", "XS", "S", "M", "L", "XL"]
-    default_sizes = st.session_state.get("f_sizes", []) or []
-    valid_defaults = [s for s in default_sizes if s in size_options]
-    sizes = st.multiselect("사이즈", size_options, default=valid_defaults, key="f_sizes_select")
+    default_sizes = [s for s in (st.session_state.get("f_sizes") or []) if s in size_options]
+    sizes = st.multiselect("사이즈", size_options, default=default_sizes, key="f_sizes_select")
 
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Section 3: 본문 구성
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Section 3: 본문 구성 ───────────────────────────────────────────────────────
 st.subheader("3. 본문 구성")
 st.caption("이미지 1~4에는 텍스트가 함께 표시됩니다. 이미지 5번부터는 이미지만 표시됩니다.")
 
-# ── 이미지+텍스트 슬롯 (1~4) ──────────────────────────────────────────────────
 for i in range(4):
     slot = st.session_state.body_slots[i]
     c_img, c_text = st.columns([1, 2], gap="medium")
@@ -280,38 +296,29 @@ for i in range(4):
             placeholder="이미지 업로드 후 자동 생성됩니다. 직접 수정도 가능해요.",
             key=f"body_text_area_{i}",
         )
-        # 텍스트 변경 시 세션에 반영
         if st.session_state.body_slots[i] is not None:
             st.session_state.body_slots[i]["text"] = body_text
 
-# ── 텍스트 자동 생성 버튼 ─────────────────────────────────────────────────────
 filled_slots = [s for s in st.session_state.body_slots if s and s.get("bytes")]
 gen_disabled = len(filled_slots) == 0
 
 if st.button(
     "✨ 본문 텍스트 자동 생성",
     disabled=gen_disabled,
-    help="이미지 1~4를 모두 업로드하면 활성화됩니다" if gen_disabled else None,
+    help="이미지를 1장 이상 업로드하면 활성화됩니다" if gen_disabled else None,
 ):
     with st.spinner("Claude가 본문 텍스트를 생성하는 중... (30초 정도 소요될 수 있어요)"):
         try:
-            tmp_paths = []
-            for slot in filled_slots:
-                tmp_paths.append(save_upload(slot["bytes"], slot["name"]))
-
+            tmp_paths = [save_upload(s["bytes"], s["name"]) for s in filled_slots]
             texts = analyze_body_images(tmp_paths)
-
-            # 생성된 텍스트를 슬롯에 반영
             for i, text in enumerate(texts):
                 if st.session_state.body_slots[i] is not None:
                     st.session_state.body_slots[i]["text"] = text
-
             st.success("본문 텍스트 자동 생성 완료! 내용을 확인하고 수정하세요.")
             st.rerun()
         except Exception as e:
             st.error(f"텍스트 생성 실패: {e}")
 
-# ── 이미지 전용 슬롯 (5번~) ───────────────────────────────────────────────────
 st.markdown("**이미지 전용 슬롯 (5번~)**")
 extra_files = st.file_uploader(
     "추가 이미지 업로드 (최대 11장)",
@@ -320,20 +327,18 @@ extra_files = st.file_uploader(
     key="body_extra_uploader",
 )
 if extra_files:
-    new_extras = [{"bytes": f.read(), "name": f.name} for f in extra_files[:11]]
-    st.session_state.body_extras = new_extras
+    st.session_state.body_extras = [{"bytes": f.read(), "name": f.name} for f in extra_files[:11]]
 
 if st.session_state.body_extras:
-    preview_cols = st.columns(min(len(st.session_state.body_extras), 5))
+    n = min(len(st.session_state.body_extras), 5)
+    preview_cols = st.columns(n)
     for idx, extra in enumerate(st.session_state.body_extras):
-        with preview_cols[idx % 5]:
+        with preview_cols[idx % n]:
             st.image(extra["bytes"], caption=f"이미지 {idx + 5}", use_container_width=True)
 
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 등록 버튼
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Section 4: 카페24 등록 ────────────────────────────────────────────────────
 st.subheader("4. 카페24에 등록")
 
 register_ready = bool(
@@ -350,24 +355,18 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
         try:
             client = get_client()
 
-            # 본문 HTML 빌드
-            description_html = ""
             all_body_paths: list[Path] = []
             all_body_texts: list[str] = []
-
             for slot in st.session_state.body_slots:
                 if slot and slot.get("bytes"):
                     all_body_paths.append(save_upload(slot["bytes"], slot["name"]))
                     all_body_texts.append(slot.get("text", ""))
-
             for extra in st.session_state.body_extras:
                 if extra.get("bytes"):
                     all_body_paths.append(save_upload(extra["bytes"], extra["name"]))
 
-            if all_body_paths:
-                description_html = build_description_html(all_body_paths, all_body_texts)
+            description_html = build_description_html(all_body_paths, all_body_texts) if all_body_paths else ""
 
-            # 상품 등록 payload
             payload: dict = {
                 "product_name": st.session_state.f_product_name,
                 "supply_product_name": st.session_state.f_product_name,
@@ -392,7 +391,6 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
             product = result.get("product", {})
             product_no = product.get("product_no")
 
-            # 카테고리 할당
             if category_no and product_no:
                 try:
                     client.post(f"/categories/{category_no}/products", {
@@ -401,13 +399,12 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
                 except Exception as ce:
                     st.warning(f"카테고리 할당 실패: {ce}")
 
-            # 대표 이미지 업로드
             image_uploaded = False
             if st.session_state.main_img_bytes and product_no:
                 try:
                     tmp_main = save_upload(
                         st.session_state.main_img_bytes,
-                        st.session_state.main_img_name or "main.jpg"
+                        st.session_state.main_img_name or "main.jpg",
                     )
                     images = process_product_images(tmp_main)
                     img_result = client.post(f"/products/{product_no}/images", {
@@ -428,42 +425,35 @@ if st.button("✅ 카페24에 등록", type="primary", disabled=not register_rea
                 f"{'✅ 이미지 자동 등록 완료' if image_uploaded else '⚠️ 이미지 자동 등록 실패'}"
             )
             st.link_button("쇼핑몰에서 보기 →", shop_url)
-
-            # 카테고리 캐시 무효화하여 상품목록 새로고침
-            if "categories" in st.session_state:
-                del st.session_state["categories"]
+            st.session_state.product_list_cache = None  # 목록 캐시 초기화
 
         except Exception as e:
             st.error(f"등록 실패: {e}")
 
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 등록된 상품 목록
-# ══════════════════════════════════════════════════════════════════════════════
+# ── 등록된 상품 목록 ───────────────────────────────────────────────────────────
 with st.expander("📦 등록된 상품 목록", expanded=False):
-    col_refresh, _ = st.columns([1, 4])
-    with col_refresh:
-        if st.button("새로고침", key="refresh_products"):
-            st.session_state["product_list_cache"] = None
+    if st.button("새로고침", key="refresh_products"):
+        st.session_state.product_list_cache = None
 
-    try:
-        if "product_list_cache" not in st.session_state or st.session_state.product_list_cache is None:
+    if st.session_state.product_list_cache is None:
+        try:
             client = get_client()
             result = client.get_products(limit=12)
             st.session_state.product_list_cache = result.get("products", [])
+        except Exception as e:
+            st.error(f"상품 목록 로드 실패: {e}")
+            st.session_state.product_list_cache = []
 
-        products = st.session_state.product_list_cache or []
-
-        if not products:
-            st.info("등록된 상품이 없습니다.")
-        else:
-            cols = st.columns(4)
-            for idx, p in enumerate(products):
-                with cols[idx % 4]:
-                    if p.get("detail_image"):
-                        st.image(p["detail_image"], use_container_width=True)
-                    st.caption(f"**{p.get('product_name', '-')}**")
-                    st.caption(f"{int(p.get('price', 0)):,}원 · No.{p.get('product_no')}")
-    except Exception as e:
-        st.error(f"상품 목록 로드 실패: {e}")
+    products = st.session_state.product_list_cache or []
+    if not products:
+        st.info("등록된 상품이 없습니다.")
+    else:
+        cols = st.columns(4)
+        for idx, p in enumerate(products):
+            with cols[idx % 4]:
+                if p.get("detail_image"):
+                    st.image(p["detail_image"], use_container_width=True)
+                st.caption(f"**{p.get('product_name', '-')}**")
+                st.caption(f"{int(p.get('price', 0)):,}원 · No.{p.get('product_no')}")
