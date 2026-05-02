@@ -1,0 +1,29 @@
+name: Cafe24 토큰 자동 갱신
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # 매주 월요일 02:00 UTC (한국 11:00)
+  workflow_dispatch:      # 수동 실행 가능
+
+jobs:
+  refresh-token:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: requests 설치
+        run: pip install requests
+
+      - name: Cafe24 토큰 갱신
+        env:
+          CAFE24_MALL_ID:      ${{ secrets.CAFE24_MALL_ID }}
+          CAFE24_CLIENT_ID:    ${{ secrets.CAFE24_CLIENT_ID }}
+          CAFE24_CLIENT_SECRET: ${{ secrets.CAFE24_CLIENT_SECRET }}
+          CAFE24_API_VERSION:  ${{ secrets.CAFE24_API_VERSION }}
+          GH_TOKEN:            ${{ secrets.GH_TOKEN }}
+          GITHUB_GIST_ID:      ${{ secrets.GITHUB_GIST_ID }}
+        run: python scripts/refresh_cafe24_token.py

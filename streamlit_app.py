@@ -3,11 +3,13 @@ ryublanche-ax Streamlit 어드민
 Streamlit Cloud 배포용 진입점
 """
 
+import json
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
+import requests as _http
 import streamlit as st
 
 # ── 페이지 설정 (반드시 최상단) ────────────────────────────────────────────────
@@ -84,12 +86,55 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 # ── 토큰 관리 ──────────────────────────────────────────────────────────────────
-# st.cache_resource: 앱 인스턴스 수준 전역 캐시 (모든 세션 간 공유, 앱 재시작 시 초기화)
-# Cafe24 refresh 시 rotate된 새 refresh_token을 여기에 저장해 secrets 불일치 문제 방지
+# Gist 영구 저장: 앱 재시작 후에도 rotate된 최신 refresh_token 유지
+# GITHUB_TOKEN + GITHUB_GIST_ID가 secrets에 있을 때만 활성화 (없으면 기존 secrets 방식)
+
+def _load_from_gist() -> dict | None:
+    try:
+        gist_id = str(st.secrets.get("GITHUB_GIST_ID", ""))
+        gh_token = str(st.secrets.get("GITHUB_TOKEN", ""))
+        if not gist_id or not gh_token:
+            return None
+        resp = _http.get(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"token {gh_token}",
+                     "Accept": "application/vnd.github.v3+json"},
+            timeout=5,
+        )
+        if resp.ok:
+            content = resp.json().get("files", {}).get("cafe24_tokens.json", {}).get("content", "")
+            if content and content.strip() != "{}":
+                return json.loads(content)
+    except Exception:
+        pass
+    return None
+
+
+def _save_to_gist(data: dict) -> None:
+    try:
+        gist_id = str(st.secrets.get("GITHUB_GIST_ID", ""))
+        gh_token = str(st.secrets.get("GITHUB_TOKEN", ""))
+        if not gist_id or not gh_token:
+            return
+        _http.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"token {gh_token}",
+                     "Accept": "application/vnd.github.v3+json"},
+            json={"files": {"cafe24_tokens.json": {"content": json.dumps(data)}}},
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 @st.cache_resource
 def _token_store() -> dict:
-    """앱 인스턴스 전역 토큰 저장소. 최초 한 번만 초기화."""
-    return {"access_token": None, "refresh_token": None, "expires_at": None}
+    """앱 인스턴스 전역 토큰 저장소. 재시작 시 Gist에서 최신 토큰 복원."""
+    store = {"access_token": None, "refresh_token": None, "expires_at": None}
+    gist_data = _load_from_gist()
+    if gist_data:
+        store.update(gist_data)
+    return store
 
 
 def _do_refresh() -> str:
@@ -114,6 +159,12 @@ def _do_refresh() -> str:
     st.session_state["access_token"] = store["access_token"]
     st.session_state["token_expires_at"] = store["expires_at"]
     st.session_state["refresh_token"] = store["refresh_token"]
+    # Gist에 저장 (앱 재시작 후에도 최신 rotate 토큰 사용 가능)
+    _save_to_gist({
+        "access_token": store["access_token"],
+        "refresh_token": store["refresh_token"],
+        "expires_at": store["expires_at"],
+    })
     return store["access_token"]
 
 
@@ -208,7 +259,7 @@ def load_categories() -> list[dict]:
         return st.session_state.categories
     try:
         result = _with_retry(
-            lambda c: c.get("/categories", params={"limit": 200})
+            lambda c: c.get("/categories", params={"limit": 100})  # Cafe24 max: 100
         )
         # use_display 필터 없이 전체 반환 (쇼핑몰 설정마다 값이 다름)
         cats = result.get("categories", [])
