@@ -25,5 +25,5 @@ jobs:
           CAFE24_CLIENT_SECRET: ${{ secrets.CAFE24_CLIENT_SECRET }}
           CAFE24_API_VERSION:  ${{ secrets.CAFE24_API_VERSION }}
           GH_TOKEN:            ${{ secrets.GH_TOKEN }}
-          GITHUB_GIST_ID:      ${{ secrets.GITHUB_GIST_ID }}
+          GIST_ID:      ${{ secrets.GIST_ID }}
         run: python scripts/refresh_cafe24_token.py

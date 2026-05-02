@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /Users/jhhyun/Documents/claude-starter-main/projects/ryublanche-ax/.claude/wrap-up)",
+      "Bash(mkdir -p /Users/jhhyun/Documents/claude-starter-main/projects/ryublanche-ax/.claude/scripts)"
+    ]
+  }
+}

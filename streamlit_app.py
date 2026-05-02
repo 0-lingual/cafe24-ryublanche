@@ -87,11 +87,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 # ── 토큰 관리 ──────────────────────────────────────────────────────────────────
 # Gist 영구 저장: 앱 재시작 후에도 rotate된 최신 refresh_token 유지
-# GITHUB_TOKEN + GITHUB_GIST_ID가 secrets에 있을 때만 활성화 (없으면 기존 secrets 방식)
+# GITHUB_TOKEN + GIST_ID가 secrets에 있을 때만 활성화 (없으면 기존 secrets 방식)
 
 def _load_from_gist() -> dict | None:
     try:
-        gist_id = str(st.secrets.get("GITHUB_GIST_ID", ""))
+        gist_id = str(st.secrets.get("GIST_ID", ""))
         gh_token = str(st.secrets.get("GITHUB_TOKEN", ""))
         if not gist_id or not gh_token:
             return None
@@ -112,7 +112,7 @@ def _load_from_gist() -> dict | None:
 
 def _save_to_gist(data: dict) -> None:
     try:
-        gist_id = str(st.secrets.get("GITHUB_GIST_ID", ""))
+        gist_id = str(st.secrets.get("GIST_ID", ""))
         gh_token = str(st.secrets.get("GITHUB_TOKEN", ""))
         if not gist_id or not gh_token:
             return

@@ -7,7 +7,7 @@ GitHub Actions에서 매주 실행되어 refresh_token을 갱신하고 Gist에 �
   CAFE24_MALL_ID, CAFE24_CLIENT_ID, CAFE24_CLIENT_SECRET
   CAFE24_API_VERSION (optional, default: 2024-09-01)
   GH_TOKEN         — GitHub PAT (gist scope)
-  GITHUB_GIST_ID   — Private Gist ID (cafe24_tokens.json 포함)
+  GIST_ID   — Private Gist ID (cafe24_tokens.json 포함)
 """
 
 import base64
@@ -22,7 +22,7 @@ CLIENT_ID = os.environ["CAFE24_CLIENT_ID"]
 CLIENT_SECRET = os.environ["CAFE24_CLIENT_SECRET"]
 API_VERSION = os.environ.get("CAFE24_API_VERSION", "2024-09-01")
 GH_TOKEN = os.environ["GH_TOKEN"]
-GIST_ID = os.environ["GITHUB_GIST_ID"]
+GIST_ID = os.environ["GIST_ID"]
 
 GIST_FILENAME = "cafe24_tokens.json"
 CAFE24_TOKEN_URL = f"https://{MALL_ID}.cafe24api.com/api/v2/oauth/token"
