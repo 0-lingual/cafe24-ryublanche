@@ -66,6 +66,15 @@ def process_body_image(image_path: Path, width: int = 860) -> str:
         return _to_base64_jpeg(img, quality=85)
 
 
+def process_extra_image(image_path: Path) -> str:
+    """추가 대표 이미지: detail_image 규격(1000x1000) base64."""
+    with Image.open(image_path) as img:
+        img.load()
+        cropped = _center_crop_square(img.copy())
+    resized = cropped.resize((1000, 1000), Image.LANCZOS)
+    return _to_base64_jpeg(resized)
+
+
 def process_product_images(image_path: Path) -> dict[str, str]:
     """
     원본 이미지를 카페24 4종 규격으로 변환하여 반환.

@@ -48,7 +48,10 @@ class Cafe24Client:
     def delete(self, path: str) -> dict:
         resp = self.session.delete(f"{BASE_URL}{path}")
         resp.raise_for_status()
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception:
+            return {}
 
     # ── 상품 API ──────────────────────────────────────────────────────────────
 
